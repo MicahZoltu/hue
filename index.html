@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hue Controller</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <header id="topbar" style="display:none">
+      <h1>Hue Controller</h1>
+      <span class="ip" id="ip-indicator"></span>
+      <span class="spacer"></span>
+      <button id="refresh-btn">Refresh</button>
+      <div id="menu-wrap">
+        <button id="menu-btn" class="ghost" title="Menu">&#8943;</button>
+        <div id="menu">
+          <button id="export-btn">Export credentials</button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section id="connect">
+        <div class="card">
+          <h2>Connect to your Hue Bridge</h2>
+          <p>Enter the IP address of your Philips Hue Bridge. You can find it in the Hue mobile app under <em>Settings &rarr; Hue Bridges</em>, or in your router's DHCP table (Philips MACs start with <code>00:17:88</code>).</p>
+          <p>After clicking <strong>Connect</strong>, press the round link button on the bridge within 30 seconds. The app will pick up the new username automatically.</p>
+          <input id="ip-input" type="text" placeholder="192.168.1.42" spellcheck="false" autocomplete="off">
+          <div class="row">
+            <button id="connect-btn" class="primary">Connect &amp; pair</button>
+          </div>
+          <div class="status" id="connect-status"></div>
+
+          <details>
+            <summary>Have existing credentials? Import them</summary>
+            <p>Paste the JSON below (from this app's <em>Export credentials</em> option).</p>
+            <textarea id="import-input" placeholder='{"ip":"192.168.1.42","token":"..."}' spellcheck="false"></textarea>
+            <div class="row">
+              <button id="import-btn">Import &amp; connect</button>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <div id="dashboard" style="display:none; width:100%">
+        <aside id="rooms">
+          <h2>Rooms</h2>
+          <div id="rooms-list"></div>
+        </aside>
+        <section id="panel"></section>
+      </div>
+    </main>
+
+  </div>
+
+  <div id="toast" class="info"></div>
+
+  <script src="color.js"></script>
+  <script src="hue.js"></script>
+  <script src="core.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
