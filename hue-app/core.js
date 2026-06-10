@@ -1,20 +1,23 @@
 /*
- * HueCore - shared state, persistence, and mutations for the desktop and
- * mobile Hue controllers. Renders nothing; no DOM access. Both UIs
- * (app.js for desktop, mobile.js for mobile) subscribe to events and
- * re-render on 'state'.
+ * HueCore - shared state, persistence, and mutations for the desktop and mobile Hue controllers. Renders nothing; no DOM access.
+ * Both UIs (app.js for desktop, mobile.js for mobile) subscribe to events and re-render on 'state'.
  *
  * Public surface (window.HueCore):
  *   getState(), getGroups(), getLights(), getScenes(),
  *   getSelectedRoomId(), setSelectedRoomId(id),
  *   tryRestoreSession(), importCreds(json), connectAndPair(ip, onTick?),
- *   disconnect(),
+ *   testBridge(ip), disconnect(),
  *   toggleLight(id, wantOn), setLightBri(id, bri),
  *   toggleGroup(id, wantOn), setGroupBri(id, bri),
  *   activateScene(groupId, sceneId),
+ *   clearCertError(),
  *   on(event, callback)
  *
- * Events: 'state' | 'connected' | 'disconnected' | 'error'.
+ * Events: 'state' | 'connected' | 'disconnected' | 'error' | 'cert-error'.
+ *
+ * Cert error model: when the page is served over HTTPS and any bridge fetch fails with a network-class error (NETWORK / TIMEOUT / BRIDGE_OFFLINE), the most likely cause is an untrusted self-signed cert. We set state.certError and emit 'cert-error'.
+ * The renderer (mobile only for now) shows a tailored view with retry + open-bridge buttons.
+ * After the user accepts the cert in the address bar (or installs the CA on the device), they tap Retry; on success the cert error clears and normal flow resumes.
  */
 
 (function (global) {
@@ -23,15 +26,20 @@
   var STORAGE_CREDS = 'hue.creds';
   var STORAGE_ROOM  = 'hue.selectedRoomId';
 
+  // Set once at init. True when the page itself is loaded over HTTPS (a PWA served from a tunnel, for example).
+  // The check is for window.location.protocol which exists in browsers; in node (used for unit tests) the typeof guard prevents ReferenceError.
+  var isHttps = (typeof location !== 'undefined' && location.protocol === 'https:');
+
   var state = {
     creds: null,             // { ip, token } | null
     groups: [],
     lights: [],
     scenes: [],
-    selectedRoomId: null
+    selectedRoomId: null,
+    certError: null          // { ip, timestamp } | null
   };
 
-  var listeners = { state: [], connected: [], disconnected: [], error: [] };
+  var listeners = { state: [], connected: [], disconnected: [], error: [], 'cert-error': [] };
 
   function emit(event, payload) {
     var list = listeners[event] || [];
@@ -51,6 +59,30 @@
       var idx = arr.indexOf(callback);
       if (idx >= 0) arr.splice(idx, 1);
     };
+  }
+
+  // --- cert error helpers -------------------------------------------------
+
+  function setCertError(ip) {
+    state.certError = { ip: ip || (state.creds && state.creds.ip) || null, timestamp: Date.now() };
+    emit('cert-error', state.certError);
+  }
+
+  function clearCertError() {
+    if (state.certError) {
+      state.certError = null;
+      emit('state');
+    }
+  }
+
+  // Heuristic: in HTTPS context, any fetch-class error against the bridge is treated as a cert problem.
+  // Aggressive on purpose — false positives just leave the user on the cert view, where Retry will quickly tell them whether the real issue was a cert or a network.
+  function maybeSetCertError(err, ip) {
+    if (!isHttps) return;
+    if (!err) return;
+    if (err.code === 'NETWORK' || err.code === 'TIMEOUT' || err.code === 'BRIDGE_OFFLINE') {
+      setCertError(ip);
+    }
   }
 
   // --- persistence -------------------------------------------------------
@@ -80,7 +112,8 @@
       groups: state.groups.slice(),
       lights: state.lights.slice(),
       scenes: state.scenes.slice(),
-      selectedRoomId: state.selectedRoomId
+      selectedRoomId: state.selectedRoomId,
+      certError: state.certError
     };
   }
   function getGroups()  { return state.groups.slice(); }
@@ -160,6 +193,9 @@
     }).then(function (data) {
       emit('connected', data);
       return data;
+    }).catch(function (err) {
+      maybeSetCertError(err, creds.ip);
+      throw err;
     });
   }
 
@@ -178,6 +214,9 @@
     }).then(function (data) {
       emit('connected', data);
       return data;
+    }).catch(function (err) {
+      maybeSetCertError(err, state.creds.ip);
+      throw err;
     });
   }
 
@@ -192,7 +231,15 @@
     }).then(function (data) {
       emit('connected', data);
       return data;
+    }).catch(function (err) {
+      maybeSetCertError(err, ip);
+      throw err;
     });
+  }
+
+  // Standalone bridge reachability check. Used by the Retry button on the cert-error view to test whether the cert is now trusted without committing to the full connectAndPair flow.
+  function testBridge(ip) {
+    return HueApi.testBridge(ip);
   }
 
   function disconnect() {
@@ -224,6 +271,7 @@
       .then(reconcile)
       .catch(function (err) {
         emit('error', { code: err.code || 'ERROR', message: err.message, source: 'mutation' });
+        maybeSetCertError(err, state.creds.ip);
         reconcile();
         throw err;
       });
@@ -237,6 +285,7 @@
       .then(reconcile)
       .catch(function (err) {
         emit('error', { code: err.code || 'ERROR', message: err.message, source: 'mutation' });
+        maybeSetCertError(err, state.creds.ip);
         reconcile();
         throw err;
       });
@@ -250,6 +299,7 @@
       .then(reconcile)
       .catch(function (err) {
         emit('error', { code: err.code || 'ERROR', message: err.message, source: 'mutation' });
+        maybeSetCertError(err, state.creds.ip);
         reconcile();
         throw err;
       });
@@ -263,6 +313,7 @@
       .then(reconcile)
       .catch(function (err) {
         emit('error', { code: err.code || 'ERROR', message: err.message, source: 'mutation' });
+        maybeSetCertError(err, state.creds.ip);
         reconcile();
         throw err;
       });
@@ -274,6 +325,7 @@
       .then(reconcile)
       .catch(function (err) {
         emit('error', { code: err.code || 'ERROR', message: err.message, source: 'mutation' });
+        maybeSetCertError(err, state.creds.ip);
         reconcile();
         throw err;
       });
@@ -291,6 +343,7 @@
     tryRestoreSession: tryRestoreSession,
     importCreds: importCreds,
     connectAndPair: connectAndPair,
+    testBridge: testBridge,
     disconnect: disconnect,
     // mutations
     toggleLight: toggleLight,
@@ -299,6 +352,8 @@
     setGroupBri: setGroupBri,
     activateScene: activateScene,
     refreshAll: refreshAll,
+    // cert error
+    clearCertError: clearCertError,
     // events
     on: on
   };

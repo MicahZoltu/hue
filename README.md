@@ -64,8 +64,7 @@ To force an update of the cached files, bump the `CACHE` constant in `sw.js` (e.
 
 ## Browser / CORS notes
 
-- All traffic to the bridge is plain HTTP. Modern Hue Bridge firmware (most bridges from ~2020 onward) sends CORS headers, so `fetch()` from this app works directly. If you see *"Could not reach the bridge"* but the IP is correct, your bridge's firmware may not be sending CORS headers — in that case try a different browser, or use the Hue app's remote API.
-- HTTPS to the bridge is intentionally not supported (the bridge uses a self-signed certificate, which would require an extra "accept the cert" step on first use). If your bridge has HTTP disabled, see the Hue app's developer settings.
+- All traffic to the bridge is HTTPS. Modern Hue Bridge firmware (square V2/V3 bridges) supports HTTPS with a self-signed certificate. If your bridge is reachable at `https://<ip>/` in a browser (after accepting the cert warning), the app will work. If you see *"Could not reach the bridge"* but the IP is correct, your bridge's HTTPS may be disabled, the cert may not be accepted by your browser, or your network may be blocking HTTPS to the bridge.
 - No auto-discovery: the app does not phone home and does not call any cloud service. You must enter the bridge IP yourself.
 
 ## File structure

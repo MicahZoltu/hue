@@ -1,13 +1,13 @@
 /*
  * Hue Bridge v1 ("CLIP") protocol layer.
  *
- * All endpoints are plain HTTP at http://<ip>/api/<token>/...
+ * All endpoints are HTTPS at https://<ip>/api/<token>/...
  * Errors are normalized to { code, message } so the UI can branch on code
  * without parsing strings.
  *
  * Codes:
  *   TIMEOUT      request took too long (bridge slow or unreachable)
- *   NETWORK      generic fetch failure (offline, CORS, DNS, etc.)
+ *   NETWORK      generic fetch failure (offline, CORS, cert, DNS, etc.)
  *   UNAUTHORIZED token rejected
  *   LINK_BUTTON  pair() got a non-101 error response
  *   HTTP_ERROR   bridge returned non-2xx for a reason we did not classify
@@ -35,7 +35,7 @@
   HueError.prototype = Object.create(Error.prototype);
 
   function makeUrl(ip, path) {
-    return 'http://' + ip + path;
+    return 'https://' + ip + path;
   }
 
   function request(url, opts) {

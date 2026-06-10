@@ -254,6 +254,39 @@ main {
 #error-view p { color: var(--text-muted); line-height: 1.5; }
 #error-view .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
 
+/* ----- Cert error view (HTTPS + self-signed cert) --------------------- */
+
+#cert-view {
+  margin: auto;
+  width: 100%;
+  max-width: 480px;
+  padding: 24px 16px;
+  text-align: left;
+}
+#cert-view .icon { font-size: 40px; margin-bottom: 8px; opacity: 0.6; }
+#cert-view h2 { font-size: 18px; margin-bottom: 12px; }
+#cert-view p { line-height: 1.5; margin-bottom: 12px; }
+#cert-view .muted { color: var(--text-muted); font-size: 13px; }
+#cert-view ol {
+  padding-left: 22px;
+  margin: 12px 0 20px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+#cert-view ol li { margin-bottom: 8px; }
+#cert-view .ip {
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  font-size: 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  word-break: break-all;
+}
+#cert-view button { width: 100%; margin-top: 8px; }
+#cert-view #cert-retry-btn:disabled { opacity: 0.6; }
+
 /* ----- Groups list (cards) -------------------------------------------- */
 
 #groups-list {

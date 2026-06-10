@@ -2,11 +2,11 @@
  * Hue Mobile UI. Renders state from HueCore and wires up DOM events.
  *
  * Views (mobile-internal, not in HueCore):
- *   'connect' | 'groups' | 'group' | 'error'
+ *   'connect' | 'groups' | 'group' | 'error' | 'cert-error'
  *
- * Once HueCore has creds, the user cannot navigate back to the connect
- * screen from inside the app. If creds become invalid, we show a
- * full-screen error and instruct the user to clear browser data.
+ * Once HueCore has creds, the user cannot navigate back to the connect screen from inside the app.
+ * If creds become invalid, we show a full-screen error and instruct the user to clear browser data.
+ * The 'cert-error' view handles HTTPS-context TLS errors specifically and is non-terminal: it has a Retry button that re-tests the bridge after the user accepts the cert in the address bar.
  */
 
 (function () {
@@ -14,6 +14,7 @@
 
   var view = 'connect';
   var errorMessage = null;
+  var lastAttemptedIp = null;  // remembered for pre-filling the input after a cert-error retry
 
   // --- DOM helpers -------------------------------------------------------
 
@@ -127,6 +128,7 @@
     card.appendChild(el('p', { text: 'After tapping Connect, press the round link button on the bridge within 30 seconds. The app will pick up the new username automatically.' }));
 
     var ipInput = el('input', { id: 'ip-input', type: 'text', placeholder: '192.168.1.42', spellcheck: 'false', autocomplete: 'off' });
+    if (lastAttemptedIp) ipInput.value = lastAttemptedIp;
     card.appendChild(ipInput);
 
     var connectBtn = el('button', { id: 'connect-btn', class: 'primary', text: 'Connect & pair' });
@@ -168,6 +170,7 @@
     var btn = $('connect-btn');
     btn.disabled = true;
     setConnectStatus('Testing ' + ip + '\u2026');
+    lastAttemptedIp = ip;
     HueCore.connectAndPair(ip, function (attempt, max) {
       var remaining = Math.max(0, Math.ceil((max - attempt) * 1.5));
       setConnectStatus('Waiting for link button press\u2026 ' + remaining + 's left');
@@ -205,6 +208,69 @@
     section.appendChild(el('h2', { text: 'Could not connect' }));
     section.appendChild(el('p', { text: msg || 'Something went wrong reaching the bridge.' }));
     section.appendChild(el('p', { style: 'margin-top:16px;', text: 'Clear your browser data to start over and re-pair.' }));
+    main.appendChild(section);
+    app.appendChild(main);
+  }
+
+  // --- cert error view (HTTPS + self-signed cert) -----------------------
+
+  function renderCertError() {
+    view = 'cert-error';
+    var s = HueCore.getState();
+    var ip = (s.certError && s.certError.ip) || (s.creds && s.creds.ip) || lastAttemptedIp || '';
+
+    var app = $('app');
+    clear(app);
+    app.appendChild(renderGroupsHeader());
+
+    var main = el('main');
+    var section = el('section', { id: 'cert-view' });
+    section.appendChild(el('div', { class: 'icon', text: '\u26A0' }));
+    section.appendChild(el('h2', { text: 'Bridge certificate needed' }));
+    section.appendChild(el('p', { text: 'The Hue Bridge uses a self-signed HTTPS certificate that this app doesn\u2019t recognize. The connection can\u2019t complete until the certificate is trusted.' }));
+
+    if (ip) {
+      var openBtn = el('button', { class: 'primary', text: 'Open bridge page' });
+      openBtn.addEventListener('click', function () {
+        window.open('https://' + ip + '/', '_blank');
+      });
+      section.appendChild(openBtn);
+      section.appendChild(el('p', { class: 'muted', style: 'margin-top:12px;', text: 'A new tab will open to the bridge. Your browser will show a "Your connection is not private" warning \u2014 click through it (Advanced \u2192 Proceed to ' + ip + '). Then come back here and tap Retry.' }));
+    }
+
+    section.appendChild(el('p', { style: 'margin-top:20px;', text: 'If Retry still fails, install the bridge\u2019s certificate on this device as a trusted CA:' }));
+    var ol = el('ol');
+    ol.appendChild(el('li', { text: 'Open the bridge page (button above) and accept the cert warning.' }));
+    if (ip) {
+      ol.appendChild(el('li', {}, [
+        document.createTextNode('In that tab, go to '),
+        el('span', { class: 'ip', text: 'https://' + ip + '/certificate' }),
+        document.createTextNode(' and save the file.')
+      ]));
+    } else {
+      ol.appendChild(el('li', { text: 'In that tab, navigate to the bridge\u2019s certificate endpoint and save the file.' }));
+    }
+    ol.appendChild(el('li', { text: 'On Android: Settings \u2192 Security \u2192 Encryption & credentials \u2192 Install a certificate \u2192 CA certificate. Pick the saved file.' }));
+    ol.appendChild(el('li', { text: 'Come back here and tap Retry.' }));
+    section.appendChild(ol);
+
+    var retryBtn = el('button', { id: 'cert-retry-btn', text: 'Retry' });
+    retryBtn.addEventListener('click', function () {
+      if (!ip) { toast('No bridge IP available', 'error'); return; }
+      retryBtn.disabled = true;
+      retryBtn.textContent = 'Testing\u2026';
+      HueCore.testBridge(ip).then(function () {
+        HueCore.clearCertError();
+        view = 'connect';
+        render();
+      }).catch(function (err) {
+        retryBtn.disabled = false;
+        retryBtn.textContent = 'Retry';
+        toast(err.message || 'Still unreachable', 'error');
+      });
+    });
+    section.appendChild(retryBtn);
+
     main.appendChild(section);
     app.appendChild(main);
   }
@@ -397,6 +463,7 @@
   // --- render dispatch --------------------------------------------------
 
   function render() {
+    if (view === 'cert-error') return renderCertError();
     if (view === 'connect') return renderConnect();
     if (view === 'error')   return renderError(errorMessage);
     var s = HueCore.getState();
@@ -416,6 +483,13 @@
       render();
     });
     HueCore.on('error', function (e) { toast(e.message || 'Error', 'error'); });
+    HueCore.on('cert-error', function (e) {
+      // Switch to the cert-error view whenever HueCore flags a cert problem. The Retry button on that view will clear it.
+      if (e && e.ip) lastAttemptedIp = e.ip;
+      view = 'cert-error';
+      try { history.pushState({ view: 'cert-error' }, ''); } catch (err) {}
+      render();
+    });
 
     // Hardware back button + browser forward: popstate fires for both.
     window.addEventListener('popstate', function (e) {
@@ -435,6 +509,8 @@
       try { history.replaceState({ view: 'groups' }, ''); } catch (e) {}
       render();
     }).catch(function (err) {
+      // If HueCore already flagged a cert error, the cert-error listener has switched the view. Otherwise fall through to normal handling.
+      if (HueCore.getState().certError) return;
       if (err && err.code === 'NO_CREDS') {
         view = 'connect';
         try { history.replaceState({ view: 'connect' }, ''); } catch (e) {}
