@@ -45,6 +45,23 @@ Use the **&#8943; menu → Export credentials** option. Copy the JSON, open the 
 
 Open `mobile.html` on a phone. It uses the same protocol layer (`color.js`, `hue.js`) and the same shared `core.js` as the desktop, but renders a mobile-first UI: a list of room cards you tap into, then a per-room view with scenes at the top, a master on/off + brightness, and per-light on/off + brightness. No color picker per light — use scenes to set color. The in-app back button (round `<` in the top-left of the group view) and the device's hardware back button both work, via the History API. Once paired, the only way to reset is to clear your browser data; there is no Disconnect button. Pair and import-credentials work the same as on desktop.
 
+### Mobile as a PWA (Add to Home Screen)
+
+`mobile.html` is a Progressive Web App. On Android Chrome, you can install it to the home screen and the files will be cached indefinitely by a service worker, so the app loads even with no internet. The Hue Bridge still needs to be reachable on the local network.
+
+**Why localhost?** Service workers and Add-to-Home-Screen require a secure context. The browser treats `http://localhost` and `http://127.0.0.1` as secure, so PWA features work there. `file://` and other `http://` origins do not.
+
+**Quickest way to install:** from the `hue/` directory, run a local server and open the URL on your phone (over Wi-Fi, same network as the bridge):
+
+```
+bunx serve hue/
+# or:  python3 -m http.server 8000 --directory hue/
+```
+
+Then on the phone, visit `http://<your-computer-ip>:8000/mobile.html`. Android Chrome will show a banner or menu item to install; after that, the icon is on your home screen and the app launches in standalone (no browser chrome) mode. Subsequent launches work offline (modulo the local-network requirement for the bridge).
+
+To force an update of the cached files, bump the `CACHE` constant in `sw.js` (e.g. `hue-mobile-v1` → `hue-mobile-v2`); the new service worker will replace the old cache on next load.
+
 ## Browser / CORS notes
 
 - All traffic to the bridge is plain HTTP. Modern Hue Bridge firmware (most bridges from ~2020 onward) sends CORS headers, so `fetch()` from this app works directly. If you see *"Could not reach the bridge"* but the IP is correct, your bridge's firmware may not be sending CORS headers — in that case try a different browser, or use the Hue app's remote API.
@@ -61,9 +78,12 @@ Open `mobile.html` on a phone. It uses the same protocol layer (`color.js`, `hue
 | `hue.js`       | Bridge v1 ("CLIP") protocol layer (fetch wrappers)               |
 | `core.js`      | Shared state, persistence, mutation logic, event bus             |
 | `app.js`       | Desktop UI rendering and event wiring                            |
-| `mobile.html`  | Mobile page shell                                                |
+| `mobile.html`  | Mobile page shell (PWA: manifest link, SW registration)         |
 | `mobile.css`   | Mobile-first dark theme, fat-finger tap targets                 |
 | `mobile.js`    | Mobile UI: groups list → group detail with scenes and lights     |
+| `manifest.webmanifest` | PWA manifest (name, icons, theme color, standalone)       |
+| `sw.js`        | Service worker: cache-first for app files, cache version constant |
+| `icon.svg`     | PWA / home-screen icon (path-based "H" in the accent color)     |
 | `build.js`     | Optional: bundles desktop files into `hue.html`                 |
 
 No build step required to run the app. `build.js` is optional and only used to produce the single-file bundle.
