@@ -1,19 +1,19 @@
 {
-  "name": "Hue Mobile",
-  "short_name": "Hue",
-  "description": "Control Philips Hue lights through a local Hue Bridge.",
-  "start_url": "./mobile.html",
-  "scope": "./",
-  "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#0f1115",
-  "theme_color": "#f0a847",
-  "icons": [
-    {
-      "src": "./icon.svg",
-      "sizes": "192x192 512x512",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    }
-  ]
+	"name": "Hue Mobile",
+	"short_name": "Hue",
+	"description": "Control Philips Hue lights through a local Hue Bridge.",
+	"start_url": "./mobile.html",
+	"scope": "./",
+	"display": "standalone",
+	"orientation": "portrait",
+	"background_color": "#0f1115",
+	"theme_color": "#f0a847",
+	"icons": [
+		{
+			"src": "./icon.svg",
+			"sizes": "192x192 512x512",
+			"type": "image/svg+xml",
+			"purpose": "any maskable"
+		}
+	]
 }
