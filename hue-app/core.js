@@ -1,6 +1,6 @@
 /*
- * HueCore - shared state, persistence, and mutations for the desktop and mobile Hue controllers. Renders nothing; no DOM access.
- * Both UIs (app.js for desktop, mobile.js for mobile) subscribe to events and re-render on 'state'.
+ * HueCore - shared state, persistence, and mutations for the unified Hue controller. Renders nothing; no DOM access.
+ * The single UI (app.js) subscribes to events and re-renders on 'state'.
  *
  * Public surface (window.HueCore):
  *   getState(), getGroups(), getLights(), getScenes(),

@@ -61,7 +61,7 @@ function base64(bytes: Uint8Array): string {
 
 type Priority = 'high' | 'medium' | 'low'
 
-const desktopFiles: Array<{ path: string, priority: Priority }> = [
+const appFiles: Array<{ path: string, priority: Priority }> = [
 	{ path: 'hue.html', priority: 'high' },
 	{ path: 'style.css', priority: 'high' },
 	{ path: 'app.js', priority: 'medium' },
@@ -80,7 +80,7 @@ async function main(): Promise<void> {
 	const medium: Array<Record<string, string>> = []
 	const low: Array<Record<string, string>> = []
 
-	for (const entry of desktopFiles) {
+	for (const entry of appFiles) {
 		const filePath = join(appDir, entry.path)
 		const src = Bun.file(filePath)
 		const ext = getExt(entry.path)
@@ -118,9 +118,9 @@ async function main(): Promise<void> {
 	)
 
 	console.log(`Built bundles in ${bundlesDir}`)
-	console.log(`  high:   ${high.length} files (${desktopFiles.filter(e => e.priority === 'high').map(e => e.path).join(', ')})`)
-	console.log(`  medium: ${medium.length} files (${desktopFiles.filter(e => e.priority === 'medium').map(e => e.path).join(', ')})`)
-	console.log(`  low:    ${low.length} files (${desktopFiles.filter(e => e.priority === 'low').map(e => e.path).join(', ')})`)
+	console.log(`  high:   ${high.length} files (${appFiles.filter(e => e.priority === 'high').map(e => e.path).join(', ')})`)
+	console.log(`  medium: ${medium.length} files (${appFiles.filter(e => e.priority === 'medium').map(e => e.path).join(', ')})`)
+	console.log(`  low:    ${low.length} files (${appFiles.filter(e => e.priority === 'low').map(e => e.path).join(', ')})`)
 }
 
 main().catch((err) => {

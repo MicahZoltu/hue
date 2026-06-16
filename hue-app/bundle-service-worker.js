@@ -2,26 +2,21 @@
  * Bundle-aware service worker.
  *
  * Installs from a priority-split bundle system:
- *   - bundles/high-priority.json   (HTML + CSS + manifest map)
+ *   - bundles/high-priority.json (HTML + CSS + manifest map)
  *   - bundles/medium-priority.json (JS files)
- *   - bundles/low-priority.json    (images, etc.)
+ *   - bundles/low-priority.json (images, etc.)
  *
- * High-priority bundle is fetched during install and contains a "manifest"
- * field mapping every bundled file path to its priority level.  This lets
- * the fetch handler distinguish between "still being downloaded" and "not
- * in any bundle, fall through to network".
+ * High-priority bundle is fetched during install and contains a "manifest" field mapping every bundled file path to its priority level.
+ * This lets the fetch handler distinguish between "still being downloaded" and "not in any bundle, fall through to network".
  *
- * Medium and low bundles are fetched during activate.  Their files are
- * cached as they arrive.  The fetch handler awaits the relevant bundle
- * Promise if a requested file isn't cached yet but the manifest says it's
- * coming.
+ * Medium and low bundles are fetched during activate.
+ * Their files are cached as they arrive.
+ * The fetch handler awaits the relevant bundle Promise if a requested file isn't cached yet but the manifest says it's coming.
  *
- * If any bundle fails to load (missing directory, 404, parse error, etc.),
- * the service worker still installs and activates.  Files from the failed
- * bundle fall through to network like normal requests.
+ * If any bundle fails to load (missing directory, 404, parse error, etc.), the service worker still installs and activates.
+ * Files from the failed bundle fall through to network like normal requests.
  */
 
-const BUNDLE_BASE = './bundles/';
 const CACHE_NAME = 'hue-bundle';
 
 var manifest = {};
@@ -49,7 +44,7 @@ function cacheFiles(cache, files) {
 }
 
 function fetchBundle(name) {
-	return fetch(BUNDLE_BASE + name)
+	return fetch(`./bundle/${name}`)
 		.then(function (response) {
 			if (!response.ok) {
 				throw new Error(name + ' returned ' + response.status);
