@@ -15,7 +15,7 @@
  *
  * Events: 'state' | 'connected' | 'disconnected' | 'error' | 'cert-error'.
  *
- * Cert error model: when the page is served over HTTPS and any bridge fetch fails with a network-class error (NETWORK / TIMEOUT / BRIDGE_OFFLINE), the most likely cause is an untrusted self-signed cert. We set state.certError and emit 'cert-error'.
+ * Cert error model: when the bridge is reached over HTTPS (page origin is itself a secure context — https:, chrome-extension:, etc.) and any bridge fetch fails with a network-class error (NETWORK / TIMEOUT / BRIDGE_OFFLINE), the most likely cause is an untrusted self-signed cert. We set state.certError and emit 'cert-error'.
  * The renderer (mobile only for now) shows a tailored view with retry + open-bridge buttons.
  * After the user accepts the cert in the address bar (or installs the CA on the device), they tap Retry; on success the cert error clears and normal flow resumes.
  */
@@ -26,9 +26,17 @@
 	var STORAGE_CREDS = 'hue.creds';
 	var STORAGE_ROOM  = 'hue.selectedRoomId';
 
-	// Set once at init. True when the page itself is loaded over HTTPS (a PWA served from a tunnel, for example).
-	// The check is for window.location.protocol which exists in browsers; in node (used for unit tests) the typeof guard prevents ReferenceError.
-	var isHttps = (typeof location !== 'undefined' && location.protocol === 'https:');
+	// True when the bridge is being reached over HTTPS. The bridge ships with a
+	// self-signed cert, so an HTTPS page can't talk to it until the user trusts
+	// the cert; any fetch-class failure in that situation is treated as a cert
+	// problem. On every other page origin (http, file, ipfs, ipns, data, blob,
+	// about, capacitor, cordova, ionic, tauri, android-app, content, ...) the
+	// bridge is reached over plain HTTP and a fetch failure is a plain network
+	// error, not a cert issue.
+	//
+	// The scheme is decided once at IIFE init in hue.js (HueApi.scheme) so every
+	// bridge URL is built consistently.
+	var bridgeSecure = (typeof HueApi !== 'undefined' && HueApi.scheme === 'https:');
 
 	var state = {
 		creds: null,             // { ip, token } | null
@@ -78,7 +86,7 @@
 	// Heuristic: in HTTPS context, any fetch-class error against the bridge is treated as a cert problem.
 	// Aggressive on purpose — false positives just leave the user on the cert view, where Retry will quickly tell them whether the real issue was a cert or a network.
 	function maybeSetCertError(err, ip) {
-		if (!isHttps) return;
+		if (!bridgeSecure) return;
 		if (!err) return;
 		if (err.code === 'NETWORK' || err.code === 'TIMEOUT' || err.code === 'BRIDGE_OFFLINE') {
 			setCertError(ip);

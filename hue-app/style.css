@@ -204,7 +204,7 @@ main {
 #connect-view {
 	margin: auto;
 	width: 100%;
-	max-width: 480px;
+	max-width: 1024px;
 	padding: 24px 16px;
 }
 .connect-card {
@@ -223,6 +223,7 @@ main {
 .connect-card input, .connect-card textarea { font-size: 16px; }
 .connect-card .row { margin-top: 12px; }
 .connect-card button { width: 100%; }
+.connect-card textarea { height: 125px; }
 .connect-card .status {
 	color: var(--text-muted);
 	font-size: 13px;

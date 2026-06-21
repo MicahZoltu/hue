@@ -419,7 +419,7 @@
 		if (ip) {
 			var openBtn = el('button', { class: 'primary', text: 'Open bridge page' });
 			openBtn.addEventListener('click', function () {
-				window.open('https://' + ip + '/', '_blank');
+				window.open(HueApi.scheme + '//' + ip + '/', '_blank');
 			});
 			section.appendChild(openBtn);
 			section.appendChild(el('p', { class: 'muted', style: 'margin-top:12px;', text: 'A new tab will open to the bridge. Your browser will show a "Your connection is not private" warning \u2014 click through it (Advanced \u2192 Proceed to ' + ip + '). Then come back here and tap Retry.' }));
@@ -431,7 +431,7 @@
 		if (ip) {
 			ol.appendChild(el('li', {}, [
 				document.createTextNode('In that tab, go to '),
-				el('span', { class: 'ip', text: 'https://' + ip + '/certificate' }),
+				el('span', { class: 'ip', text: HueApi.scheme + '//' + ip + '/certificate' }),
 				document.createTextNode(' and save the file.')
 			]));
 		} else {

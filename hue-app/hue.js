@@ -1,7 +1,14 @@
 /*
  * Hue Bridge v1 ("CLIP") protocol layer.
  *
- * All endpoints are HTTPS at https://<ip>/api/<token>/...
+ * Endpoints are reached at <scheme>//<ip>/api/<token>/... where <scheme> is
+ * chosen by bridgeScheme() below — https when the page is itself a secure
+ * context (https:, chrome-extension:, ...), http otherwise (http:, file:,
+ * ipfs:, ipns:, data:, blob:, about:, capacitor:, cordova:, ionic:, tauri:,
+ * android-app:, content:, ...). HTTP is preferred wherever it's allowed
+ * because the bridge's self-signed HTTPS certificate is rejected by most
+ * browsers' fetch() even after the user clicks through the warning.
+ *
  * Errors are normalized to { code, message } so the UI can branch on code
  * without parsing strings.
  *
@@ -34,8 +41,36 @@
 	}
 	HueError.prototype = Object.create(Error.prototype);
 
+	// Decide which scheme to use when talking to the bridge.
+	//
+	// The Hue Bridge uses a self-signed HTTPS certificate that most browsers
+	// (notably Chrome) refuse to accept for fetch() API calls, even after the
+	// user has clicked through the warning in the address bar. Plain HTTP has
+	// no such problem, so we prefer it whenever the page's own origin does not
+	// forbid it.
+	//
+	//   https:                -> https  (mixed-content rules block http fetch)
+	//   chrome-extension:,
+	//   moz-extension:,
+	//   safari-extension:     -> https  (secure contexts; same mixed-content block)
+	//   everything else
+	//   (http:, file:, ipfs:, ipns:, data:, blob:, about:,
+	//    capacitor:, cordova:, ionic:, tauri:, android-app:,
+	//    content:, ...)        -> http   (no mixed-content enforcement)
+	//
+	// `location` may be undefined in non-browser environments (unit tests), in
+	// which case we fall back to http since there is no secure-context pressure.
+	var SECURE_ORIGIN_PROTOCOLS = { 'https:': 1, 'chrome-extension:': 1, 'moz-extension:': 1, 'safari-extension:': 1 };
+
+	function bridgeScheme() {
+		var p = (typeof location !== 'undefined' && location.protocol) || '';
+		return SECURE_ORIGIN_PROTOCOLS[p] ? 'https:' : 'http:';
+	}
+
+	var scheme = bridgeScheme();
+
 	function makeUrl(ip, path) {
-		return 'https://' + ip + path;
+		return scheme + '//' + ip + path;
 	}
 
 	function request(url, opts) {
@@ -238,6 +273,7 @@
 		setLight:      setLight,
 		setGroup:      setGroup,
 		activateScene: activateScene,
-		HueError:      HueError
+		HueError:      HueError,
+		scheme:        scheme
 	};
 })(typeof window !== 'undefined' ? window : typeof globalThis !== 'undefined' ? globalThis : this);
