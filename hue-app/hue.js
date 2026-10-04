@@ -187,10 +187,27 @@
 			});
 	}
 
+	// Hue answers list GETs with an object keyed by resource id, but error
+	// responses (e.g. an endpoint the firmware doesn't support, like GET
+	// /automations on some bridges) come back as an array: [{"error":{...}}].
+	// Normalize: keyed object -> pass through; error array -> throw a HueError
+	// so callers don't mistake the error entry for a resource.
+	function asKeyedList(data) {
+		if (Array.isArray(data)) {
+			var e = data[0] && data[0].error;
+			if (e) throw new HueError('HTTP_ERROR', e.description || ('Bridge error ' + e.type));
+			return {};
+		}
+		if (data && data.error) {
+			throw new HueError('HTTP_ERROR', data.error.description || 'Bridge error');
+		}
+		return data || {};
+	}
+
 	// --- List endpoints -----------------------------------------------------
 
 	function getLights(acc) {
-		return request(makeUrl(acc.ip, '/api/' + acc.token + '/lights')).then(function (data) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/lights')).then(function (data) { data = asKeyedList(data);
 			var out = [];
 			Object.keys(data).forEach(function (id) {
 				var l = data[id];
@@ -208,7 +225,7 @@
 	}
 
 	function getGroups(acc) {
-		return request(makeUrl(acc.ip, '/api/' + acc.token + '/groups')).then(function (data) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/groups')).then(function (data) { data = asKeyedList(data);
 			var out = [];
 			Object.keys(data).forEach(function (id) {
 				var g = data[id];
@@ -227,7 +244,7 @@
 	}
 
 	function getScenes(acc) {
-		return request(makeUrl(acc.ip, '/api/' + acc.token + '/scenes')).then(function (data) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/scenes')).then(function (data) { data = asKeyedList(data);
 			var out = [];
 			Object.keys(data).forEach(function (id) {
 				var s = data[id];
@@ -236,6 +253,112 @@
 					id: id,
 					name: s.name,
 					group: s.group
+				});
+			});
+			return out;
+		});
+	}
+
+	// Bridge configuration. The bridge exposes its own clock via the config
+	// object: `UTC` (current UTC time) and `localtime` (in the bridge's timezone).
+	// We surface a minimal normalized slice plus the model/API versions so the UI
+	// can show the server time and flag time-sync drift without full config access.
+	function getConfig(acc) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/config')).then(function (data) {
+			return {
+				localtime: data.localtime != null ? data.localtime : null,
+				utc: data.UTC != null ? data.UTC : null,
+				timezone: data.timezone != null ? data.timezone : null,
+				modelid: data.modelid != null ? data.modelid : null,
+				apiversion: data.apiversion != null ? data.apiversion : null
+			};
+		});
+	}
+
+	// Automations / schedules / rules are the bridge's automatic ("routines")
+	// mechanisms. Schedules and rules always use status enabled/disabled. The
+	// newer /automations endpoint may report a different "on" string on some
+	// firmware (e.g. "active"), so we record the observed non-disabled string as
+	// `onStatus` and let the caller toggle to that value rather than hardcoding it.
+	function getSchedules(acc) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/schedules')).then(function (data) { data = asKeyedList(data);
+			var out = [];
+			Object.keys(data).forEach(function (id) {
+				var s = data[id];
+				if (!s) return;
+				out.push({
+					id: id,
+					name: s.name != null ? s.name : '',
+					localtime: s.localtime != null ? s.localtime : null,
+					status: s.status != null ? s.status : 'disabled',
+					onStatus: 'enabled',
+					description: s.description != null ? s.description : '',
+					created: s.created != null ? s.created : null,
+					command: s.command || null
+				});
+			});
+			return out;
+		});
+	}
+
+	function getRules(acc) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/rules')).then(function (data) { data = asKeyedList(data);
+			var out = [];
+			Object.keys(data).forEach(function (id) {
+				var r = data[id];
+				if (!r) return;
+				out.push({
+					id: id,
+					name: r.name != null ? r.name : '',
+					status: r.status != null ? r.status : 'disabled',
+					onStatus: 'enabled',
+					conditions: (r.conditions || []).slice(),
+					actions: (r.actions || []).slice(),
+					lasttriggered: r.lasttriggered != null ? r.lasttriggered : null
+				});
+			});
+			return out;
+		});
+	}
+
+	function getAutomations(acc) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/automations')).then(function (data) { data = asKeyedList(data);
+			var out = [];
+			Object.keys(data).forEach(function (id) {
+				var a = data[id];
+				if (!a) return;
+				var status = a.status != null ? a.status : 'disabled';
+				out.push({
+					id: id,
+					name: a.name != null ? a.name : '',
+					type: a.type != null ? a.type : null,
+					status: status,
+					onStatus: status === 'disabled' ? 'enabled' : status,
+					starttime: a.starttime != null ? a.starttime : null,
+					description: a.description != null ? a.description : '',
+					template: a.template != null ? a.template : null,
+					args: a.args != null ? a.args : null,
+					lasttriggered: a.lasttriggered != null ? a.lasttriggered : null,
+					raw: a
+				});
+			});
+			return out;
+		});
+	}
+
+	// Sensors back rule conditions and some automation args (e.g. motion). We keep
+	// just enough (id + name + type) to render human-readable summaries.
+	function getSensors(acc) {
+		return request(makeUrl(acc.ip, '/api/' + acc.token + '/sensors')).then(function (data) { data = asKeyedList(data);
+			var out = [];
+			Object.keys(data).forEach(function (id) {
+				var s = data[id];
+				if (!s) return;
+				out.push({
+					id: id,
+					name: s.name != null ? s.name : '',
+					type: s.type != null ? s.type : null,
+					modelid: s.modelid != null ? s.modelid : null
 				});
 			});
 			return out;
@@ -263,17 +386,153 @@
 		return setGroup(acc, groupId, { scene: sceneId });
 	}
 
+	// Generic enable/disable for schedules, rules, and automations (all accept a
+	// `status` field via PUT on the resource's own endpoint). `resource` is the
+	// plural endpoint name, e.g. 'schedules' | 'rules' | 'automations'.
+	function setResourceStatus(acc, resource, id, status) {
+		return put(acc, '/' + resource + '/' + encodeURIComponent(id), { status: status });
+	}
+
+	function updateSchedule(acc, id, body) {
+		return put(acc, '/schedules/' + encodeURIComponent(id), body);
+	}
+
+	function updateAutomation(acc, id, body) {
+		return put(acc, '/automations/' + encodeURIComponent(id), body);
+	}
+
+	// --- CLIP v2 (native Hue-app automations) -------------------------------
+	//
+	// Routines created in the official Hue app (Wake up / Go to sleep / Natural
+	// light / scheduled scenes / Hue Labs) are stored as `behavior_instance`
+	// resources and are only reachable through the v2 API. v2 differs from v1:
+	//   - officially documented as TLS-only, but bridges that still have HTTP
+	//     enabled (RED deprecation pending) also serve /clip/v2 on port 80, so
+	//     we use the same scheme as v1 (makeUrl) — http wherever it's allowed
+	//   - auth via the `hue-application-key` header (the v1 token works)
+	//   - JSON envelope: { data: [...], errors: [...] }
+
+	function requestV2(acc, path, opts) {
+		opts = opts || {};
+		var timeoutMs = opts.timeoutMs || 3000;
+		var controller = new AbortController();
+		var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+		var fetchOpts = {
+			method: opts.method || 'GET',
+			headers: { 'hue-application-key': acc.token, 'Content-Type': 'application/json' },
+			signal: controller.signal
+		};
+		if (opts.body != null) fetchOpts.body = JSON.stringify(opts.body);
+
+		return fetch(makeUrl(acc.ip, path), fetchOpts)
+			.then(function (resp) {
+				clearTimeout(timer);
+				return resp.text().then(function (text) {
+					var data;
+					try { data = text ? JSON.parse(text) : null; }
+					catch (e) { throw new HueError('BAD_RESPONSE', 'Bridge returned non-JSON: ' + text.slice(0, 80)); }
+					if (!resp.ok) {
+						throw new HueError('HTTP_ERROR', 'HTTP ' + resp.status);
+					}
+					if (data && Array.isArray(data.errors) && data.errors.length) {
+						throw new HueError('HTTP_ERROR', data.errors[0].description || 'Bridge error');
+					}
+					return data;
+				});
+			})
+			.catch(function (err) {
+				clearTimeout(timer);
+				if (err instanceof HueError) throw err;
+				if (err && err.name === 'AbortError') {
+					throw new HueError('TIMEOUT', 'Request to bridge timed out');
+				}
+				throw new HueError('NETWORK', (err && err.message) || 'Network error');
+			});
+	}
+
+	// Normalize a behavior_instance list, from either a live v2 response envelope
+	// ({ data: [...] }) or a bare array pasted from curl.
+	function normalizeBehaviorInstances(data) {
+		var list = Array.isArray(data) ? data : (data && data.data) || [];
+		return list.filter(function (b) { return b && b.id; }).map(function (b) {
+			return {
+				id: b.id,
+				scriptId: b.script_id || null,
+				name: b.name != null ? b.name : (b.metadata && b.metadata.name != null ? b.metadata.name : null),
+				enabled: !!b.enabled,
+				status: b.status != null ? b.status : null,
+				configuration: b.configuration != null ? b.configuration : null,
+				raw: b
+			};
+		});
+	}
+
+	function getBehaviorInstances(acc) {
+		return requestV2(acc, '/clip/v2/resource/behavior_instance').then(normalizeBehaviorInstances);
+	}
+
+	function getBehaviorScripts(acc) {
+		return requestV2(acc, '/clip/v2/resource/behavior_script').then(function (data) {
+			return (data && data.data || []).map(function (s) {
+				return {
+					id: s.id,
+					name: s.metadata && s.metadata.name != null ? s.metadata.name : null,
+					description: s.metadata && s.metadata.description != null ? s.metadata.description : null
+				};
+			});
+		});
+	}
+
+	// Resolve v2 rids (rooms/zones/scenes referenced inside behavior configs) to
+	// names. Best-effort: any kind that fails simply contributes nothing.
+	function getV2ResourceNames(acc) {
+		return Promise.all(['room', 'zone', 'scene'].map(function (kind) {
+			return requestV2(acc, '/clip/v2/resource/' + kind)
+				.then(function (d) { return (d && d.data) || []; })
+				.catch(function () { return []; });
+		})).then(function (lists) {
+			var map = {};
+			lists.forEach(function (list) {
+				list.forEach(function (r) {
+					var nm = r.metadata && r.metadata.name;
+					if (r.id && nm) map[r.id] = nm;
+				});
+			});
+			return map;
+		});
+	}
+
+	function setBehaviorInstanceEnabled(acc, id, enabled) {
+		return requestV2(acc, '/clip/v2/resource/behavior_instance/' + encodeURIComponent(id), {
+			method: 'PUT',
+			body: { enabled: !!enabled }
+		});
+	}
+
 	global.HueApi = {
-		testBridge:    testBridge,
-		pair:          pair,
-		verify:        verify,
-		getLights:     getLights,
-		getGroups:     getGroups,
-		getScenes:     getScenes,
-		setLight:      setLight,
-		setGroup:      setGroup,
-		activateScene: activateScene,
-		HueError:      HueError,
-		scheme:        scheme
+		testBridge:       testBridge,
+		pair:             pair,
+		verify:           verify,
+		getConfig:        getConfig,
+		getLights:        getLights,
+		getGroups:        getGroups,
+		getScenes:        getScenes,
+		getSchedules:     getSchedules,
+		getRules:         getRules,
+		getAutomations:   getAutomations,
+		getSensors:       getSensors,
+		getBehaviorInstances: getBehaviorInstances,
+		getBehaviorScripts:   getBehaviorScripts,
+		getV2ResourceNames:   getV2ResourceNames,
+		setBehaviorInstanceEnabled: setBehaviorInstanceEnabled,
+		normalizeBehaviorInstances: normalizeBehaviorInstances,
+		setLight:         setLight,
+		setGroup:         setGroup,
+		activateScene:    activateScene,
+		setResourceStatus: setResourceStatus,
+		updateSchedule:   updateSchedule,
+		updateAutomation: updateAutomation,
+		HueError:         HueError,
+		scheme:           scheme
 	};
 })(typeof window !== 'undefined' ? window : typeof globalThis !== 'undefined' ? globalThis : this);

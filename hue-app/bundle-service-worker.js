@@ -17,7 +17,7 @@
  * Files from the failed bundle fall through to network like normal requests.
  */
 
-const CACHE_NAME = 'hue-bundle';
+const CACHE_NAME = 'hue-bundle-v9';
 
 var manifest = {};
 var mediumDone = null;

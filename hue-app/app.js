@@ -30,11 +30,13 @@
 (function () {
 	'use strict';
 
-	var rendererState = { expanded: {} };
+	var rendererState = { expanded: {}, autoExpanded: {}, clusterExpanded: {} };
 	var view = 'connect';
 	var errorMessage = null;
 	var lastAttemptedIp = null;
 	var menuOpen = false;
+	// Desktop-only subview selection for the dashboard panel ('rooms' | 'automations').
+	var desktopSub = 'rooms';
 
 	// --- DOM helpers -------------------------------------------------------
 
@@ -231,10 +233,26 @@
 			el('h3', { text: opts.title }),
 			opts.body ? el('p', { text: opts.body }) : null
 		]);
-		if (!opts.hideTextarea) {
-			var ta = el('textarea', { readonly: true });
+		if (opts.fields) {
+			opts.fields.forEach(function (f) {
+				var label = el('label', { class: 'field' });
+				label.appendChild(document.createTextNode(f.label));
+				var input = el('input', { type: f.type || 'text', value: f.value != null ? f.value : '' });
+				if (f.id) input.id = f.id;
+				if (f.placeholder) input.placeholder = f.placeholder;
+				label.appendChild(input);
+				m.appendChild(label);
+			});
+		}
+		if (!opts.hideTextarea && !opts.fields) {
+			var ta = el('textarea', opts.editableText ? { id: 'modal-text', placeholder: opts.placeholder || '' } : { readonly: true });
 			ta.value = opts.text || '';
 			m.appendChild(ta);
+		}
+		if (opts.pre) {
+			var pre = el('pre', { class: 'modal-pre' });
+			pre.textContent = opts.pre;
+			m.appendChild(pre);
 		}
 		var actions = el('div', { class: 'actions' });
 		opts.actions.forEach(function (a) {
@@ -290,18 +308,67 @@
 		return refresh;
 	}
 
+	// Parse a bridge UTC timestamp like "2024-01-01T12:34:56" (sometimes missing
+	// seconds) into epoch ms. Returns null if unparseable.
+	function parseBridgeUtc(s) {
+		if (!s) return null;
+		var t = String(s);
+		if (!/Z$|[+-]\d{2}:\d{2}$/.test(t)) {
+			var hasSeconds = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(t);
+			t = t + (hasSeconds ? '' : ':00') + 'Z';
+		}
+		var ms = Date.parse(t);
+		return isNaN(ms) ? null : ms;
+	}
+
+	// Small header indicator showing the bridge's own clock (config.localtime) plus,
+	// when we can parse the bridge UTC, the skew in minutes against the browser.
+	// Colored when the skew is large enough to flag a time-sync failure.
+	function renderBridgeClock() {
+		var s = HueCore.getState();
+		if (!s.creds) return null;
+		var bt = HueCore.getBridgeTime();
+		var span = el('span', { class: 'bridge-clock', title: 'Bridge clock' });
+		if (bt && bt.localtime) {
+			var local = bt.localtime;
+			var hhmm = local.length >= 16 ? local.slice(11, 16) : local;
+			var skew = null;
+			var utcMs = parseBridgeUtc(bt.utc);
+			if (utcMs != null) skew = Math.round((utcMs - Date.now()) / 60000);
+			span.textContent = '\u23F1 ' + hhmm + (skew != null ? ' (' + (skew >= 0 ? '+' : '') + skew + 'm)' : '');
+			if (skew != null && Math.abs(skew) >= 5) span.classList.add('drift');
+		} else {
+			span.textContent = '\u23F1 --:--';
+			span.classList.add('muted');
+		}
+		return span;
+	}
+
 	function renderMenuButton() {
 		var wrap = el('div', { id: 'menu-wrap' });
 		var btn = el('button', { id: 'menu-btn', class: 'ghost', title: 'Menu' });
 		btn.innerHTML = '&#8943;';
 		btn.addEventListener('click', function (e) { e.stopPropagation(); toggleMenu(); });
 		var menu = el('div', { id: 'menu' });
+		var autoBtn = el('button', { text: 'Automations' });
+		autoBtn.addEventListener('click', function () { closeMenu(); openAutomations(); });
+		menu.appendChild(autoBtn);
 		var exportBtn = el('button', { text: 'Export credentials' });
 		exportBtn.addEventListener('click', openExport);
 		menu.appendChild(exportBtn);
 		wrap.appendChild(btn);
 		wrap.appendChild(menu);
 		return wrap;
+	}
+
+	function openAutomations() {
+		if (isDesktop()) {
+			desktopSub = 'automations';
+			view = 'groups';
+			render();
+		} else {
+			goToView('automations');
+		}
 	}
 
 	function renderHeader(opts) {
@@ -320,6 +387,11 @@
 		if (opts.showIp) {
 			var ip = HueCore.getState().creds && HueCore.getState().creds.ip;
 			if (ip) header.appendChild(el('span', { class: 'ip', text: ip }));
+		}
+
+		if (opts.showClock !== false) {
+			var clock = renderBridgeClock();
+			if (clock) header.appendChild(clock);
 		}
 
 		header.appendChild(el('span', { class: 'spacer' }));
@@ -471,7 +543,7 @@
 
 		return el('div', {
 			class: 'room-tile' + (selected ? ' selected' : ''),
-			onclick: function () { HueCore.setSelectedRoomId(g.id); }
+			onclick: function () { desktopSub = 'rooms'; HueCore.setSelectedRoomId(g.id); }
 		}, [
 			el('div', { class: 'row1' }, [
 				el('span', { class: 'name', text: g.name }),
@@ -575,9 +647,907 @@
 		rooms.appendChild(roomsList);
 		dashboard.appendChild(rooms);
 
-		dashboard.appendChild(renderDesktopPanel(s.groups, s.lights, s.scenes, s.selectedRoomId));
+		if (desktopSub === 'automations') {
+			dashboard.appendChild(renderDesktopAutomations());
+		} else {
+			dashboard.appendChild(renderDesktopPanel(s.groups, s.lights, s.scenes, s.selectedRoomId));
+		}
 
 		app.appendChild(dashboard);
+	}
+
+	// --- Render: automations (shared body for desktop + mobile) ------------
+
+	function renderDesktopAutomations() {
+		var panel = el('section', { id: 'panel' });
+		panel.appendChild(el('div', { id: 'panel-header' }, [
+			el('h2', { text: 'Automations' }),
+			el('span', { class: 'meta', text: 'Manage automations, schedules, and rules' })
+		]));
+		panel.appendChild(renderAutomationsBody());
+		return panel;
+	}
+
+	// --- Human-readable summaries -----------------------------------------
+
+	// Parse an address like "/groups/1/action" or "/lights/2/state" (or a scene /
+	// sensor address) into { kind, id }. Returns null if unrecognized.
+	function addrTarget(addr) {
+		if (!addr) return null;
+		var m = /^\/(groups|lights|scenes|sensors|rules|schedules)\/([^\/]+)/.exec(String(addr));
+		return m ? { kind: m[1], id: m[2] } : null;
+	}
+
+	function nameForTarget(kind, id) {
+		var s = HueCore.getState();
+		if (kind === 'groups') {
+			var g = s.groups.find(function (x) { return x.id === String(id); });
+			if (g) return g.name;
+		} else if (kind === 'lights') {
+			var l = s.lights.find(function (x) { return x.id === String(id); });
+			if (l) return l.name;
+		} else if (kind === 'scenes') {
+			var sc = s.scenes.find(function (x) { return x.id === String(id); });
+			if (sc) return sc.name;
+		} else if (kind === 'sensors') {
+			var sn = s.sensors.find(function (x) { return x.id === String(id); });
+			if (sn) return sn.name;
+		}
+		return null;
+	}
+
+	function describeTarget(addr) {
+		var t = addrTarget(addr);
+		if (!t) return null;
+		var name = nameForTarget(t.kind, t.id);
+		if (name) return name;
+		var label = { groups: 'room', lights: 'light', scenes: 'scene', sensors: 'sensor', rules: 'rule', schedules: 'schedule' }[t.kind] || t.kind;
+		return label + ' #' + t.id;
+	}
+
+	// --- Bridge-local time helpers ----------------------------------------
+	//
+	// Hue schedule/automation times are already in the bridge's local timezone,
+	// so we only need to format them — no browser timezone math. Formats:
+	//   2016-08-21T22:50:49   absolute one-shot
+	//   W124/T07:00:00        weekly recurring (day mask: Mon=64 ... Sun=1)
+	//   PTHH:MM:SS / R<n>/PT  timers
+	//   ...AHH:MM:SS          randomized suffix on any of the above
+
+	var DAY_BITS = [['Mon', 64], ['Tue', 32], ['Wed', 16], ['Thu', 8], ['Fri', 4], ['Sat', 2], ['Sun', 1]];
+
+	function humanizeHueTime(t) {
+		if (!t) return null;
+		var s = String(t);
+		if (s === 'none') return null;
+		var rand = '';
+		var am = /A(\d{2}:\d{2}:\d{2})$/.exec(s);
+		if (am) { s = s.slice(0, s.length - am[0].length); rand = ' (±' + am[1].slice(0, 5) + ')'; }
+
+		var w = /^W(\d+)\/T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+		if (w) {
+			var mask = parseInt(w[1], 10);
+			var days = [];
+			DAY_BITS.forEach(function (d) { if (mask & d[1]) days.push(d[0]); });
+			var dayText = mask === 127 ? 'Daily' : (days.length ? days.join(', ') : 'weekly');
+			return dayText + ' at ' + w[2] + ':' + w[3] + rand;
+		}
+
+		var a = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+		if (a) return 'On ' + a[3] + '.' + a[2] + '.' + a[1] + ' at ' + a[4] + ':' + a[5] + rand;
+
+		var p = /^(?:R(\d*)\/)?PT(\d{2}):(\d{2}):(\d{2})$/.exec(s);
+		if (p) {
+			var dur = [];
+			if (parseInt(p[2], 10)) dur.push(parseInt(p[2], 10) + 'h');
+			if (parseInt(p[3], 10)) dur.push(parseInt(p[3], 10) + 'm');
+			if (parseInt(p[4], 10)) dur.push(parseInt(p[4], 10) + 's');
+			var rep = p[1] === '' ? 'repeating' : (p[1] ? 'repeats ' + p[1] + '×' : 'once');
+			return 'Timer ' + (dur.join(' ') || '0s') + ' (' + rep + ')' + rand;
+		}
+
+		return s;
+	}
+
+	function isTimerTime(t) { return /^(?:R\d*\/)?PT/.test(String(t || '')); }
+
+	// "HH:MM" extracted from a weekly or absolute Hue time string, for <input type=time>.
+	function extractHHMM(t) {
+		var m = /T(\d{2}):(\d{2})(?::\d{2})?/.exec(String(t || ''));
+		return m ? m[1] + ':' + m[2] : null;
+	}
+
+	// Replace the time portion of a weekly/absolute Hue time string with "HH:MM",
+	// preserving the date/day-mask prefix, seconds and randomization suffix.
+	function withNewTime(orig, hhmm) {
+		var s = String(orig || '');
+		if (!/T\d{2}:\d{2}(:\d{2})?/.test(s)) return hhmm + ':00';
+		return s.replace(/T\d{2}:\d{2}(:\d{2})?/, 'T' + hhmm + ':00');
+	}
+
+	function humanizeLastTriggered(t) {
+		if (!t || t === 'none') return 'never';
+		var h = humanizeHueTime(t);
+		return h || t;
+	}
+
+	function findSchedule(id) {
+		var s = HueCore.getState();
+		return s.schedules.find(function (x) { return x.id === String(id); }) || null;
+	}
+
+	// Schedules on real bridges are often named with bare numbers; in that case a
+	// reference reads better as "#id (Timer 5m)" than "'7'".
+	function scheduleLabel(id) {
+		var sc = findSchedule(id);
+		if (!sc) return 'schedule #' + id;
+		var n = sc.name;
+		if (n && !/^\d+:?$/.test(String(n).trim()) && String(n) !== String(sc.id)) return "'" + n + "'";
+		var t = humanizeHueTime(sc.localtime);
+		return '#' + sc.id + (t ? ' (' + t + ')' : '');
+	}
+
+	// Build a proper sentence for a Hue command/action object { address, method, body }.
+	function describeAction(cmd) {
+		if (!cmd) return null;
+		var t = addrTarget(cmd.address);
+		var target = describeTarget(cmd.address);
+		var body = cmd.body || {};
+		var q = target ? " '" + target + "'" : '';
+
+		// Actions that start/stop schedules (rules commonly enable/disable timers).
+		if (t && t.kind === 'schedules') {
+			var sched = findSchedule(t.id);
+			var isTimer = sched && isTimerTime(sched.localtime);
+			var what = isTimer ? 'timer' : 'schedule';
+			if (body.status === 'enabled') return 'Start ' + what + ' ' + scheduleLabel(t.id);
+			if (body.status === 'disabled') return 'Stop ' + what + ' ' + scheduleLabel(t.id);
+			return 'Send action to ' + what + ' ' + scheduleLabel(t.id);
+		}
+		// Actions that set a variable sensor's value (CLIPGenericStatus flags).
+		if (t && t.kind === 'sensors' && body.status != null) {
+			return "Set '" + (target || ('sensor #' + t.id)) + "' to " + body.status;
+		}
+		// Actions that enable/disable other rules.
+		if (t && t.kind === 'rules' && body.status != null) {
+			return (body.status === 'enabled' ? 'Enable rule ' : 'Disable rule ') + q;
+		}
+		if (body.scene != null) {
+			var sc = nameForTarget('scenes', body.scene) || body.scene;
+			return "Activate scene '" + sc + "'" + (target ? ' in' + q : '');
+		}
+		if (body.storelightstate) {
+			return 'Save current light state to' + (target ? q : ' a scene');
+		}
+		var out;
+		if (body.on === false) out = 'Turn off' + q;
+		else if (body.on === true) out = 'Turn on' + q;
+		if (body.bri != null && body.on !== false) {
+			var pct = Math.round(body.bri / 254 * 100);
+			out = out ? out + ' at ' + pct + '%' : 'Set brightness of' + q + ' to ' + pct + '%';
+		}
+		if (!out) out = 'Send action to' + q;
+		return out;
+	}
+
+	// Render a rule condition as readable text, resolving the target and mapping
+	// the state attribute (presence/any_on/daylight/...) to plain words.
+	function describeCondition(c) {
+		if (!c) return null;
+		var t = addrTarget(c.address);
+		var name = t ? (nameForTarget(t.kind, t.id) || describeTarget(c.address)) : 'device';
+		var am = /\/state\/([^\/]+)$/.exec(String(c.address || ''));
+		var attrMap = {
+			presence: 'motion detected', daylight: 'daylight', any_on: 'any light on',
+			all_on: 'all lights on', status: 'status', buttonevent: 'button event',
+			lightlevel: 'light level', dark: 'dark', temperature: 'temperature',
+			flag: 'flag', open: 'open', humidity: 'humidity', localtime: 'time'
+		};
+		var attrText = (am && (attrMap[am[1]] || am[1])) || 'state';
+		var ops = { eq: 'is', ne: 'is not', gt: 'is above', lt: 'is below', dx: 'changed', ddx: 'changed', stable: 'stable at', in: 'in', out: 'not in' };
+		var op = ops[c.operator] || c.operator;
+		if (c.operator === 'dx' || c.operator === 'ddx') return "'" + name + "' " + attrText + ' changed';
+		var val = c.value;
+		if (val === 'true') val = 'yes';
+		else if (val === 'false') val = 'no';
+		return "'" + name + "' " + attrText + (val != null ? ' ' + op + ' ' + val : '');
+	}
+
+	function summarizeAutomationArgs(item) {
+		var args = item.args;
+		if (!args || typeof args !== 'object') return null;
+		var bits = [];
+		if (args.scene != null) {
+			bits.push("scene: '" + (nameForTarget('scenes', args.scene) || args.scene) + "'");
+		}
+		if (args.group != null) {
+			bits.push("room: '" + (nameForTarget('groups', args.group) || args.group) + "'");
+		}
+		if (args.light != null) bits.push('light: ' + args.light);
+		if (args.on != null) bits.push('on: ' + args.on);
+		if (args.bri != null) bits.push('brightness: ' + args.bri);
+		if (args.brightness != null) bits.push('brightness: ' + args.brightness);
+		if (args.fade_in_time != null) bits.push('fade in: ' + args.fade_in_time);
+		if (args.randomize != null) bits.push('randomize: ' + args.randomize);
+		if (args.recurrence != null) bits.push('recurrence: ' + args.recurrence);
+		return bits.length ? bits.join(' \u00B7 ') : null;
+	}
+
+	// Some bridges name schedules/rules with bare numbers (often equal to the id).
+	// Those aren't meaningful names, so derive one from what the item does.
+	function displayName(item, kind) {
+		var n = item.name;
+		if (n && !/^\d+:?$/.test(String(n).trim()) && String(n) !== String(item.id)) return n;
+		if (kind === 'schedule') {
+			var a = describeAction(item.command);
+			if (a) return a;
+		}
+		if (kind === 'rule') {
+			var acts = (item.actions || []).map(describeAction).filter(Boolean);
+			if (acts.length) return acts[0];
+		}
+		if (item.description) return item.description;
+		return '(unnamed)';
+	}
+
+	function describeItem(item, kind) {
+		var lines = [];
+		if (kind === 'schedule') {
+			if (item.description) lines.push(item.description);
+			var act = describeAction(item.command);
+			if (act && act !== displayName(item, kind)) lines.push(act);
+			if (item.localtime) lines.push('When: ' + (humanizeHueTime(item.localtime) || item.localtime));
+		} else if (kind === 'rule') {
+			var conds = (item.conditions || []).map(describeCondition).filter(Boolean);
+			var acts = (item.actions || []).map(describeAction).filter(Boolean);
+			if (conds.length) {
+				lines.push('When');
+				conds.forEach(function (c) { lines.push('\u2022 ' + c); });
+			}
+			if (acts.length) {
+				lines.push('Then');
+				acts.forEach(function (a) { lines.push('\u2022 ' + a); });
+			}
+			lines.push('Last triggered: ' + humanizeLastTriggered(item.lasttriggered));
+		} else {
+			// automation
+			if (item.description) lines.push(item.description);
+			lines.push('Type: ' + (item.type || 'unknown') + (item.template ? ' \u00B7 template: ' + item.template : ''));
+			if (item.starttime) lines.push('When: ' + (humanizeHueTime(item.starttime) || item.starttime));
+			lines.push('Last triggered: ' + humanizeLastTriggered(item.lasttriggered));
+			var argText = summarizeAutomationArgs(item);
+			if (argText) lines.push('Details: ' + argText);
+		}
+		if (!lines.length) lines.push('No descriptive detail available.');
+		return lines;
+	}
+
+	function renderAutomationRow(item, opts) {
+		var expandKey = (opts.kind || 'item') + ':' + item.id;
+		var expanded = !!rendererState.autoExpanded[expandKey];
+		function toggleExpand() {
+			rendererState.autoExpanded[expandKey] = !rendererState.autoExpanded[expandKey];
+			render();
+		}
+
+		var on = item.status !== 'disabled';
+		var row = el('div', { class: 'auto-row' + (on ? '' : ' off') });
+		// Click anywhere on the row (except the controls) to expand/collapse.
+		row.addEventListener('click', function (e) {
+			if (e.target.closest('.auto-edit') || e.target.closest('.toggle') || e.target.closest('.auto-expand')) return;
+			toggleExpand();
+		});
+
+		var info = el('div', { class: 'auto-info' });
+		info.appendChild(el('div', { class: 'auto-name', text: displayName(item, opts.kind) }));
+		var metaParts = [];
+		var when = humanizeHueTime(item.localtime || item.starttime);
+		if (when) metaParts.push(when);
+		if (item.type) metaParts.push(item.type);
+		metaParts.push(item.status || 'unknown');
+		info.appendChild(el('div', { class: 'auto-meta', text: metaParts.join(' \u00B7 ') }));
+		row.appendChild(info);
+
+		var chev = el('button', { class: 'auto-expand' + (expanded ? ' open' : ''), type: 'button', title: 'Details' });
+		chev.innerHTML = '\u203A';
+		chev.addEventListener('click', toggleExpand);
+		row.appendChild(chev);
+
+		var toggle = el('input', { type: 'checkbox', class: 'toggle', checked: on });
+		toggle.addEventListener('change', function () {
+			if (opts.onToggle) opts.onToggle(item, toggle.checked);
+		});
+		row.appendChild(toggle);
+
+		if (opts.editable && opts.onEdit) {
+			var editBtn = el('button', { class: 'auto-edit', text: 'Edit' });
+			editBtn.addEventListener('click', function () { opts.onEdit(item); });
+			row.appendChild(editBtn);
+		}
+
+		if (expanded) {
+			var details = el('div', { class: 'auto-details' });
+			describeItem(item, opts.kind).forEach(function (ln) {
+				var cls = 'auto-line' + (/^\u2022 /.test(ln) ? ' bullet' : (ln === 'When' || ln === 'Then' ? ' subhead' : ''));
+				details.appendChild(el('div', { class: cls, text: ln }));
+			});
+			// Automations expose undocumented, type-specific args. Always include the
+			// raw object so any unknown automation can be reviewed and turned into a
+			// proper template later.
+			if (opts.kind === 'automation' && item.raw) {
+				details.appendChild(el('div', { class: 'auto-raw-label', text: 'Raw data' }));
+				var pre = el('pre', { class: 'auto-raw' });
+				pre.textContent = JSON.stringify(item.raw, null, 2);
+				details.appendChild(pre);
+			}
+			row.appendChild(details);
+		}
+		return row;
+	}
+
+	function renderResourceSection(title, list, opts) {
+		opts = opts || {};
+		var section = el('div', { class: 'section' });
+		section.appendChild(el('h3', { text: title + (list.length ? ' (' + list.length + ')' : '') }));
+		if (!list.length) {
+			section.appendChild(el('div', { class: 'auto-empty', text: opts.emptyText || 'None.' }));
+			return section;
+		}
+		var container = el('div', { class: 'auto-list' });
+		list.forEach(function (item) { container.appendChild(renderAutomationRow(item, opts)); });
+		section.appendChild(container);
+		return section;
+	}
+
+	// Sorting: schedules chronologically by time-of-day (timers last), rules and
+	// automations alphabetically by their display name.
+	function timeSortKey(item) {
+		var t = item.localtime || item.starttime;
+		if (!t) return '\uffff';
+		if (isTimerTime(t)) return '\ufffe';
+		var hm = extractHHMM(t);
+		return hm || '\ufffd';
+	}
+
+	function sortedItems(list, kind) {
+		var arr = list.slice();
+		if (kind === 'schedule') {
+			arr.sort(function (a, b) { return timeSortKey(a).localeCompare(timeSortKey(b)); });
+		} else {
+			arr.sort(function (a, b) {
+				return displayName(a, kind).toLowerCase().localeCompare(displayName(b, kind).toLowerCase());
+			});
+		}
+		return arr;
+	}
+
+	// --- Composite automation detection -------------------------------------
+	//
+	// Third-party apps build rich automations out of bridge primitives: variable
+	// sensors as state flags, storage scenes as memory, schedules as timers, and
+	// rules as glue. Detect those composite automations by linking rules that
+	// reference the same sensor / scene / schedule / rule (connected components).
+	// Groups and lights are deliberately excluded from linking — they are targets,
+	// not glue, and linking on them would merge every same-room rule into one blob.
+
+	var LINK_KINDS = ['sensors', 'scenes', 'schedules', 'rules'];
+
+	function ruleRefs(rule) {
+		var refs = { groups: [], lights: [], scenes: [], sensors: [], schedules: [], rules: [] };
+		(rule.conditions || []).concat(rule.actions || []).forEach(function (x) {
+			var t = addrTarget(x.address);
+			if (t && refs[t.kind] && refs[t.kind].indexOf(t.id) < 0) refs[t.kind].push(t.id);
+		});
+		// Scene activations reference the scene in the body, not the address.
+		(rule.actions || []).forEach(function (a) {
+			if (a.body && a.body.scene != null && refs.scenes.indexOf(String(a.body.scene)) < 0) {
+				refs.scenes.push(String(a.body.scene));
+			}
+		});
+		return refs;
+	}
+
+	function clusterRules(rules) {
+		var byRef = {};
+		rules.forEach(function (r, i) {
+			var refs = ruleRefs(r);
+			LINK_KINDS.forEach(function (kind) {
+				refs[kind].forEach(function (id) {
+					var k = kind + ':' + id;
+					(byRef[k] = byRef[k] || []).push(i);
+				});
+			});
+		});
+		var parent = rules.map(function (_, i) { return i; });
+		function find(a) { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; }
+		function union(a, b) { var ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra; }
+		Object.keys(byRef).forEach(function (k) {
+			var idxs = byRef[k];
+			for (var j = 1; j < idxs.length; j++) union(idxs[0], idxs[j]);
+		});
+		var groups = {};
+		rules.forEach(function (r, i) {
+			var root = find(i);
+			(groups[root] = groups[root] || []).push(r);
+		});
+		return Object.keys(groups).map(function (k) { return groups[k]; });
+	}
+
+	// Name a cluster after its most-referenced shared glue resource: prefer the
+	// variable sensor (these are usually named after the automation, e.g.
+	// "Main Area, Vibrant"), then scenes and rules; fall back to the room.
+	function clusterName(rules) {
+		var best = null, bestN = 0;
+		['sensors', 'scenes', 'rules'].forEach(function (kind) {
+			var counts = {};
+			rules.forEach(function (r) {
+				ruleRefs(r)[kind].forEach(function (id) { counts[id] = (counts[id] || 0) + 1; });
+			});
+			Object.keys(counts).forEach(function (id) {
+				if (counts[id] > bestN) {
+					var nm = nameForTarget(kind, id);
+					if (nm) { bestN = counts[id]; best = nm; }
+				}
+			});
+		});
+		if (best) return best;
+		var gcounts = {};
+		rules.forEach(function (r) {
+			ruleRefs(r).groups.forEach(function (id) {
+				var n = nameForTarget('groups', id);
+				if (n) gcounts[n] = (gcounts[n] || 0) + 1;
+			});
+		});
+		var gbest = null, gn = 0;
+		Object.keys(gcounts).forEach(function (n) { if (gcounts[n] > gn) { gn = gcounts[n]; gbest = n; } });
+		return gbest ? gbest + ' automation' : 'Linked rules';
+	}
+
+	// Small labeled chips describing the composite automation's building blocks.
+	function clusterChips(rules) {
+		var sensors = {}, scenes = {}, snapshots = {}, schedules = {}, rooms = {};
+		rules.forEach(function (r) {
+			var refs = ruleRefs(r);
+			refs.sensors.forEach(function (id) { sensors[id] = true; });
+			refs.schedules.forEach(function (id) { schedules[id] = true; });
+			refs.groups.forEach(function (id) { rooms[id] = true; });
+			(r.actions || []).forEach(function (a) {
+				var t = addrTarget(a.address);
+				if (t && t.kind === 'scenes' && a.body && a.body.storelightstate) snapshots[t.id] = true;
+			});
+			refs.scenes.forEach(function (id) { if (!snapshots[id]) scenes[id] = true; });
+		});
+		var chips = [];
+		Object.keys(sensors).forEach(function (id) { chips.push({ role: 'var', label: 'variable: ' + (nameForTarget('sensors', id) || ('#' + id)) }); });
+		Object.keys(snapshots).forEach(function (id) { chips.push({ role: 'snapshot', label: 'snapshot: ' + (nameForTarget('scenes', id) || ('#' + id)) }); });
+		Object.keys(scenes).forEach(function (id) { chips.push({ role: 'scene', label: 'scene: ' + (nameForTarget('scenes', id) || ('#' + id)) }); });
+		Object.keys(schedules).forEach(function (id) {
+			var sc = findSchedule(id);
+			chips.push({ role: 'timer', label: (sc && isTimerTime(sc.localtime) ? 'timer: ' : 'schedule: ') + scheduleLabel(id) });
+		});
+		Object.keys(rooms).forEach(function (id) { chips.push({ role: 'room', label: 'room: ' + (nameForTarget('groups', id) || ('#' + id)) }); });
+		return chips.slice(0, 12);
+	}
+
+	function renderRuleCluster(rules, key, opts) {
+		var expanded = rendererState.clusterExpanded[key] !== false; // default open
+		var card = el('div', { class: 'auto-cluster' });
+
+		var head = el('div', { class: 'cluster-head' });
+		head.addEventListener('click', function () {
+			rendererState.clusterExpanded[key] = !expanded;
+			render();
+		});
+		var titleWrap = el('div', { class: 'cluster-title' }, [
+			el('div', { class: 'cluster-name', text: clusterName(rules) }),
+			el('div', { class: 'cluster-meta', text: rules.length + ' linked rules' })
+		]);
+		head.appendChild(titleWrap);
+
+		// Master toggle: enable/disable the whole automation (all member rules).
+		var allOn = rules.every(function (r) { return r.status !== 'disabled'; });
+		var master = el('input', { type: 'checkbox', class: 'toggle', checked: allOn, title: 'Enable/disable all rules in this automation' });
+		master.addEventListener('click', function (e) { e.stopPropagation(); });
+		master.addEventListener('change', function () {
+			rules.forEach(function (r) {
+				if ((r.status !== 'disabled') !== master.checked) HueCore.setRuleEnabled(r.id, master.checked);
+			});
+		});
+		head.appendChild(master);
+
+		var chev = el('button', { class: 'auto-expand' + (expanded ? ' open' : ''), type: 'button' });
+		chev.innerHTML = '\u203A';
+		head.appendChild(chev);
+		card.appendChild(head);
+
+		if (expanded) {
+			var chips = clusterChips(rules);
+			if (chips.length) {
+				var chipRow = el('div', { class: 'cluster-chips' });
+				chips.forEach(function (ch) { chipRow.appendChild(el('span', { class: 'chip ' + ch.role, text: ch.label })); });
+				card.appendChild(chipRow);
+			}
+			var list = el('div', { class: 'auto-list cluster-rules' });
+			rules.forEach(function (r) { list.appendChild(renderAutomationRow(r, opts)); });
+			card.appendChild(list);
+		}
+		return card;
+	}
+
+	function renderRulesSection(rules, opts) {
+		var section = el('div', { class: 'section' });
+		section.appendChild(el('h3', { text: 'Rules' + (rules.length ? ' (' + rules.length + ')' : '') }));
+		if (!rules.length) {
+			section.appendChild(el('div', { class: 'auto-empty', text: 'No rules.' }));
+			return section;
+		}
+		var clusters = clusterRules(rules);
+		// Composite automations (multi-rule clusters) first, largest first, then
+		// standalone rules as regular rows.
+		var multis = clusters.filter(function (c) { return c.length > 1; })
+			.sort(function (a, b) { return b.length - a.length; });
+		var singles = clusters.filter(function (c) { return c.length === 1; });
+		var container = el('div', { class: 'auto-list' });
+		multis.forEach(function (c) {
+			var key = 'cluster:' + c.map(function (r) { return r.id; }).sort().join(',');
+			container.appendChild(renderRuleCluster(c, key, opts));
+		});
+		singles.forEach(function (c) { container.appendChild(renderAutomationRow(c[0], opts)); });
+		section.appendChild(container);
+		return section;
+	}
+
+	// --- Native (v2) behavior instances -------------------------------------
+
+	function scriptNameFor(scriptId) {
+		var s = HueCore.getState();
+		var sc = s.behaviorScripts.find(function (x) { return x.id === scriptId; });
+		return sc ? sc.name : null;
+	}
+
+	function formatV2Days(days) {
+		if (!days || !days.length) return '';
+		var set = {};
+		days.forEach(function (d) { set[d] = true; });
+		var all = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+		if (all.every(function (d) { return set[d]; })) return 'daily';
+		var wd = all.slice(0, 5), we = all.slice(5);
+		if (wd.every(function (d) { return set[d]; }) && !we.some(function (d) { return set[d]; })) return 'weekdays';
+		if (we.every(function (d) { return set[d]; }) && !wd.some(function (d) { return set[d]; })) return 'weekends';
+		return days.map(function (d) { return d.charAt(0).toUpperCase() + d.slice(1, 3); }).join(', ');
+	}
+
+	function pad2(n) { n = parseInt(n, 10); return (n < 10 ? '0' : '') + n; }
+
+	function sortedBehaviorInstances(list) {
+		return list.slice().sort(function (a, b) {
+			var an = (a.name || scriptNameFor(a.scriptId) || '').toLowerCase();
+			var bn = (b.name || scriptNameFor(b.scriptId) || '').toLowerCase();
+			return an.localeCompare(bn);
+		});
+	}
+
+	// Walk a behavior configuration for clock times, fade durations and target
+	// resources. The common shape is cfg.when_extended { recurrence_days,
+	// start_at.time_point.time, transition.minutes } with targets in where/what;
+	// schemas vary per script, so generic walking is the fallback and the raw
+	// config is always shown too.
+	function v2Summarize(cfg, names) {
+		var times = [], fades = [], targets = [];
+		function walkTimes(o) {
+			if (!o || typeof o !== 'object') return;
+			if (Array.isArray(o)) { o.forEach(walkTimes); return; }
+			if (o.time && typeof o.time === 'object' && o.time.hour != null) {
+				var hhmm = pad2(o.time.hour) + ':' + pad2(o.time.minute || 0);
+				var d = formatV2Days(o.recurrence_days);
+				var text = d ? hhmm + ' (' + d + ')' : hhmm;
+				if (times.indexOf(text) < 0) times.push(text);
+			} else if (o.sun_time_type) {
+				var st = String(o.sun_time_type).replace(/_/g, ' ');
+				if (times.indexOf(st) < 0) times.push(st);
+			}
+			Object.keys(o).forEach(function (k) { walkTimes(o[k]); });
+		}
+		function walkTargets(o) {
+			if (!o || typeof o !== 'object') return;
+			if (Array.isArray(o)) { o.forEach(walkTargets); return; }
+			if (o.rid && o.rtype && ['room', 'zone', 'scene', 'light', 'bridge_home', 'recipe'].indexOf(o.rtype) >= 0) {
+				var nm = names[o.rid];
+				var label = nm ? "'" + nm + "'" : (o.rtype === 'bridge_home' ? 'whole home' : o.rtype);
+				if (targets.indexOf(label) < 0) targets.push(label);
+			}
+			Object.keys(o).forEach(function (k) { walkTargets(o[k]); });
+		}
+		if (cfg && typeof cfg === 'object') {
+			// Structured when_extended shape (native Hue routines).
+			var we = cfg.when_extended;
+			if (we && typeof we === 'object') {
+				var startAt = we.start_at || {};
+				var tod = startAt.time_point && startAt.time_point.time;
+				if (tod && tod.hour != null) {
+					var hhmm = pad2(tod.hour) + ':' + pad2(tod.minute || 0);
+					var d = formatV2Days(we.recurrence_days);
+					times.push(d ? hhmm + ' (' + d + ')' : hhmm);
+				}
+				var tr = (startAt.transition && startAt.transition.minutes != null) ? startAt.transition
+					: (we.transition && we.transition.minutes != null) ? we.transition : null;
+				if (tr) fades.push('fade ' + tr.minutes + 'm');
+			}
+			if (!times.length) walkTimes(cfg.when != null ? cfg.when : cfg);
+			walkTargets(cfg.where != null ? cfg.where : cfg);
+			if (cfg.what != null) walkTargets(cfg.what);
+		}
+		return { times: times, fades: fades, targets: targets };
+	}
+
+	function describeBehavior(b) {
+		var s = HueCore.getState();
+		var lines = [];
+		var script = scriptNameFor(b.scriptId);
+		if (script) lines.push('Type: ' + script);
+		var sum = v2Summarize(b.configuration, s.v2Names);
+		var when = sum.times.concat(sum.fades);
+		if (when.length) lines.push('When: ' + when.join(', '));
+		if (sum.targets.length) lines.push('Where: ' + sum.targets.join(', '));
+		if (b.status) lines.push('Status: ' + b.status);
+		if (!lines.length) lines.push('No descriptive detail available.');
+		return lines;
+	}
+
+	function renderBehaviorRow(b, opts) {
+		opts = opts || {};
+		var expandKey = 'behavior:' + b.id;
+		var expanded = !!rendererState.autoExpanded[expandKey];
+		function toggleExpand() {
+			rendererState.autoExpanded[expandKey] = !rendererState.autoExpanded[expandKey];
+			render();
+		}
+		var s = HueCore.getState();
+		var row = el('div', { class: 'auto-row' + (b.enabled ? '' : ' off') });
+		row.addEventListener('click', function (e) {
+			if (e.target.closest('.toggle') || e.target.closest('.auto-expand')) return;
+			toggleExpand();
+		});
+
+		var info = el('div', { class: 'auto-info' });
+		var name = b.name || scriptNameFor(b.scriptId) || 'Automation';
+		info.appendChild(el('div', { class: 'auto-name', text: name }));
+		var metaParts = [];
+		var sum = v2Summarize(b.configuration, s.v2Names);
+		if (sum.times.length) metaParts.push(sum.times.join(', '));
+		if (sum.fades.length) metaParts.push(sum.fades.join(', '));
+		if (sum.targets.length) metaParts.push(sum.targets.join(', '));
+		metaParts.push(b.enabled ? 'enabled' : 'disabled');
+		info.appendChild(el('div', { class: 'auto-meta', text: metaParts.join(' \u00B7 ') }));
+		row.appendChild(info);
+
+		var chev = el('button', { class: 'auto-expand' + (expanded ? ' open' : ''), type: 'button', title: 'Details' });
+		chev.innerHTML = '\u203A';
+		chev.addEventListener('click', toggleExpand);
+		row.appendChild(chev);
+
+		var toggle = el('input', { type: 'checkbox', class: 'toggle', checked: b.enabled });
+		if (opts.readonly) {
+			toggle.disabled = true;
+			toggle.title = 'Read-only (manual import) — the browser can\u2019t reach the v2 API to change this';
+		} else {
+			toggle.addEventListener('change', function () {
+				HueCore.setBehaviorInstanceEnabled(b.id, toggle.checked)
+					.catch(function (e) { toast(e.message || 'Toggle failed', 'error'); });
+			});
+		}
+		row.appendChild(toggle);
+
+		if (expanded) {
+			var details = el('div', { class: 'auto-details' });
+			describeBehavior(b).forEach(function (ln) {
+				details.appendChild(el('div', { class: 'auto-line', text: ln }));
+			});
+			details.appendChild(el('div', { class: 'auto-raw-label', text: 'Raw data' }));
+			var pre = el('pre', { class: 'auto-raw' });
+			pre.textContent = JSON.stringify(b.raw, null, 2);
+			details.appendChild(pre);
+			row.appendChild(details);
+		}
+		return row;
+	}
+
+	function openV2ImportModal() {
+		var creds = HueCore.getState().creds;
+		var ip = creds && creds.ip;
+		var token = creds && creds.token;
+		var curlCmd = 'curl -k https://' + (ip || '<bridge-ip>') + '/clip/v2/resource/behavior_instance -H "hue-application-key: ' + (token || '<your-token>') + '"';
+		showModal({
+			title: 'Import Hue app automations',
+			body: 'This bridge only serves its v2 API over HTTPS with a self-signed certificate, and it answers browser CORS preflight requests with 405 \u2014 so no browser page can call it directly. Run this command, then paste its JSON output below:',
+			pre: curlCmd,
+			editableText: true,
+			placeholder: '{"errors":[],"data":[{"id":"...","type":"behavior_instance", ...}]}',
+			actions: [
+				{ label: 'Copy curl command', onclick: function () {
+					copyToClipboard(curlCmd);
+					toast('Curl command copied.', 'info');
+				} },
+				{ label: 'Import', primary: true, onclick: function (m) {
+					var text = m.querySelector('#modal-text').value.trim();
+					if (!text) { toast('Paste the curl output first.', 'error'); return; }
+					HueCore.importV2Behaviors(text)
+						.then(function (n) { toast('Imported ' + n + ' automation' + (n === 1 ? '' : 's') + '.', 'info'); })
+						.catch(function (e) { toast(e.message || 'Import failed', 'error'); });
+					closeModal(m);
+				} },
+				{ label: 'Cancel', onclick: function (m) { closeModal(m); } }
+			]
+		});
+	}
+
+	function renderBehaviorSection() {
+		var s = HueCore.getState();
+		var section = el('div', { class: 'section' });
+		section.appendChild(el('h3', { text: 'Hue app automations' + (s.behaviorInstances.length ? ' (' + s.behaviorInstances.length + ')' : '') }));
+
+		if (s.v2Status === 'manual') {
+			var note = el('div', { class: 'auto-note' }, [
+				document.createTextNode('Showing automations imported from curl (read-only) \u2014 the browser can\u2019t reach this bridge\u2019s v2 API directly. '),
+				el('button', { class: 'auto-edit', text: 'Re-import', onclick: openV2ImportModal }),
+				document.createTextNode(' '),
+				el('button', { class: 'auto-edit', text: 'Clear', onclick: function () {
+					HueCore.clearV2Import().catch(function (e) { toast(e.message || 'Clear failed', 'error'); });
+				} })
+			]);
+			section.appendChild(note);
+			var manualList = el('div', { class: 'auto-list' });
+			sortedBehaviorInstances(s.behaviorInstances).forEach(function (b) {
+				manualList.appendChild(renderBehaviorRow(b, { readonly: true }));
+			});
+			section.appendChild(manualList);
+			return section;
+		}
+
+		if (s.v2Status === 'cert') {
+			var ip = s.creds && s.creds.ip;
+			var note = el('div', { class: 'auto-note' });
+			if (HueApi.scheme === 'https:') {
+				// Secure page: v2 went over https and the self-signed cert was rejected.
+				note.appendChild(document.createTextNode('Native Hue-app routines (daily dim/brighten, Wake up, Natural light\u2026) live behind the bridge\u2019s v2 API, and the browser blocked the connection because of the bridge\u2019s self-signed certificate. '));
+				if (ip) {
+					var link = el('button', { class: 'auto-edit', text: 'Open bridge page' });
+					link.addEventListener('click', function () { window.open('https://' + ip + '/', '_blank'); });
+					note.appendChild(link);
+					note.appendChild(document.createTextNode(' Accept the certificate there, then tap Refresh. '));
+				}
+			} else {
+				// file:// or http page: v2 was tried over plain http, so this is the
+				// bridge refusing (CORS preflight 405) or not serving v2 on port 80.
+				note.appendChild(document.createTextNode('Native Hue-app routines (daily dim/brighten, Wake up, Natural light\u2026) live behind the bridge\u2019s v2 API, which this bridge doesn\u2019t serve over HTTP and protects over HTTPS with a self-signed certificate plus CORS preflight rejection \u2014 the browser can\u2019t reach it either way. '));
+			}
+			note.appendChild(el('button', { class: 'auto-edit', text: 'Import from curl', onclick: openV2ImportModal }));
+			section.appendChild(note);
+			return section;
+		}
+		if (s.v2Status === 'unavailable') {
+			var note2 = el('div', { class: 'auto-note' }, [
+				document.createTextNode('Native Hue-app automations didn\u2019t load (v2 API unreachable from the browser). '),
+				el('button', { class: 'auto-edit', text: 'Import from curl', onclick: openV2ImportModal })
+			]);
+			section.appendChild(note2);
+			return section;
+		}
+		if (s.v2Status !== 'ok') return null;
+
+		if (!s.behaviorInstances.length) {
+			section.appendChild(el('div', { class: 'auto-empty', text: 'No native automations.' }));
+			return section;
+		}
+		var container = el('div', { class: 'auto-list' });
+		sortedBehaviorInstances(s.behaviorInstances).forEach(function (b) {
+			container.appendChild(renderBehaviorRow(b));
+		});
+		section.appendChild(container);
+		return section;
+	}
+
+	function renderAutomationsBody() {
+		var s = HueCore.getState();
+		var body = el('div', { id: 'automations-view' });
+		var behaviorSection = renderBehaviorSection();
+		if (behaviorSection) body.appendChild(behaviorSection);
+		if (s.automationsSupported === false) {
+			body.appendChild(el('p', { class: 'auto-note', text: 'The /automations endpoint is not available on this bridge firmware. Routines created in the Hue app appear below as schedules and rules.' }));
+		} else {
+			body.appendChild(renderResourceSection('Automations', sortedItems(s.automations, 'automation'), {
+				kind: 'automation',
+				emptyText: 'No automations.',
+				onToggle: function (item, on) { HueCore.setAutomationEnabled(item.id, on); },
+				editable: true,
+				onEdit: function (item) { openEditAutomation(item); }
+			}));
+		}
+		body.appendChild(renderResourceSection('Schedules', sortedItems(s.schedules, 'schedule'), {
+			kind: 'schedule',
+			emptyText: 'No schedules.',
+			onToggle: function (item, on) { HueCore.setScheduleEnabled(item.id, on); },
+			editable: true,
+			onEdit: function (item) { openEditSchedule(item); }
+		}));
+		body.appendChild(renderRulesSection(sortedItems(s.rules, 'rule'), {
+			kind: 'rule',
+			onToggle: function (item, on) { HueCore.setRuleEnabled(item.id, on); }
+		}));
+		return body;
+	}
+
+	function openEditSchedule(item) {
+		closeMenu();
+		// Weekly/absolute times get a proper time picker (bridge-local); timers
+		// (PT...) aren't a clock time, so keep a text field for those.
+		var usePicker = !!(item.localtime && !isTimerTime(item.localtime) && extractHHMM(item.localtime));
+		var timeField = usePicker
+			? { id: 'edit-localtime', label: 'Start time (bridge local)', type: 'time', value: extractHHMM(item.localtime) }
+			: { id: 'edit-localtime', label: 'Schedule time (localtime)', value: item.localtime || '', placeholder: 'e.g. W127/T07:00:00' };
+		showModal({
+			title: 'Edit schedule',
+			body: 'Edit the schedule name and start time. Times are the bridge\u2019s local time.',
+			fields: [
+				{ id: 'edit-name', label: 'Name', value: item.name || '' },
+				timeField
+			],
+			actions: [
+				{ label: 'Save', primary: true, onclick: function (m) {
+					var raw = m.querySelector('#edit-localtime').value;
+					var newTime = usePicker ? (raw ? withNewTime(item.localtime, raw) : null) : raw;
+					HueCore.updateSchedule(item.id,
+						m.querySelector('#edit-name').value,
+						newTime
+					).then(function () { toast('Saved.', 'info'); })
+					.catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+					closeModal(m);
+				} },
+				{ label: 'Cancel', onclick: function (m) { closeModal(m); } }
+			]
+		});
+	}
+
+	function openEditAutomation(item) {
+		closeMenu();
+		var fields = [{ id: 'edit-name', label: 'Name', value: item.name || '' }];
+		var usePicker = false;
+		if (item.starttime != null) {
+			usePicker = !!(!isTimerTime(item.starttime) && extractHHMM(item.starttime));
+			fields.push(usePicker
+				? { id: 'edit-starttime', label: 'Start time (bridge local)', type: 'time', value: extractHHMM(item.starttime) }
+				: { id: 'edit-starttime', label: 'Start time', value: item.starttime });
+		}
+		showModal({
+			title: 'Edit automation',
+			body: 'Edit the automation name' + (item.starttime != null ? ' and start time. Times are the bridge\u2019s local time.' : '.'),
+			fields: fields,
+			actions: [
+				{ label: 'Save', primary: true, onclick: function (m) {
+					var start = null;
+					var timeInput = m.querySelector('#edit-starttime');
+					if (item.starttime != null && timeInput) {
+						start = usePicker ? (timeInput.value ? withNewTime(item.starttime, timeInput.value) : null) : timeInput.value;
+					}
+					HueCore.updateAutomation(item.id, m.querySelector('#edit-name').value, start)
+					.then(function () { toast('Saved.', 'info'); })
+					.catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+					closeModal(m);
+				} },
+				{ label: 'Cancel', onclick: function (m) { closeModal(m); } }
+			]
+		});
+	}
+
+	function renderMobileAutomations() {
+		var app = $('app');
+		clear(app);
+		app.appendChild(renderHeader({ title: 'Automations', showBack: true }));
+		var main = el('main');
+		var viewDiv = el('div', { id: 'view' });
+		viewDiv.appendChild(renderAutomationsBody());
+		main.appendChild(viewDiv);
+		app.appendChild(main);
 	}
 
 	// --- Render: mobile groups list ---------------------------------------
@@ -835,6 +1805,7 @@
 
 		if (isDesktop()) return renderDesktopDashboard();
 
+		if (view === 'automations') return renderMobileAutomations();
 		if (view === 'group' && s.selectedRoomId) return renderMobileGroup();
 		return renderMobileGroups();
 	}
